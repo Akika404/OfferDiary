@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { h, ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
   NButton, NIcon, NInput, NDatePicker, NTag,
   NPopconfirm, NText, NSelect, useMessage
@@ -57,9 +57,32 @@ const templateOptions = computed<SelectOption[]>(() =>
 const statusOptions = computed<SelectOption[]>(() =>
   pipelineStore.getStagesByTemplateId(editForm.templateId).map(s => ({
     label: s.name,
-    value: s.name
+    value: s.name,
+    color: s.color
   }))
 )
+
+function renderStatusTag(option: SelectOption) {
+  const color = String(option.color ?? '#999')
+  return h(
+    NTag,
+    {
+      bordered: false,
+      size: 'small',
+      round: true,
+      style: {
+        maxWidth: '100%',
+        padding: '0 8px'
+      },
+      color: {
+        color: `${color}18`,
+        textColor: color,
+        borderColor: 'transparent'
+      }
+    },
+    { default: () => String(option.label ?? '') }
+  )
+}
 
 watch(() => editForm.templateId, (newId) => {
   editForm.status = pipelineStore.getInitialStageName(newId)
@@ -146,7 +169,7 @@ const columns = reactive<ColDef[]>([
   { key: 'position', title: '投递岗位', minWidth: COL_MIN, fixedWidth: null, flex: 1 },
   { key: 'date',    title: '投递时间', minWidth: COL_MIN, fixedWidth: null, flex: 1 },
   { key: 'salary',  title: '薪资待遇', minWidth: 100, fixedWidth: null, flex: 0.95 },
-  { key: 'status',  title: '当前状态', minWidth: 60, fixedWidth: null, flex: 0.6 },
+  { key: 'status',  title: '当前状态', minWidth: 84, fixedWidth: null, flex: 0.8 },
   { key: 'elapsed', title: '距上次变更', minWidth: COL_MIN, fixedWidth: null, flex: 1 },
   { key: 'actions', title: '操作',    minWidth: COL_MIN, fixedWidth: null, flex: 1 },
 ])
@@ -568,6 +591,8 @@ onBeforeUnmount(() => {
               v-model:value="editForm.status"
               size="small"
               :options="statusOptions"
+              :render-label="(option: SelectOption) => renderStatusTag(option)"
+              :render-tag="({ option }) => renderStatusTag(option)"
               style="width: 100%"
             />
           </div>
