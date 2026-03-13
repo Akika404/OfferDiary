@@ -62,6 +62,10 @@ const statusOptions = computed<SelectOption[]>(() =>
   }))
 )
 
+const canCommitEditingRow = computed(() =>
+  Boolean(editForm.name.trim() && editForm.position.trim())
+)
+
 function renderStatusTag(option: SelectOption) {
   const color = String(option.color ?? '#999')
   return h(
@@ -105,7 +109,7 @@ function activateNewRow(idx: number) {
 }
 
 function autoSaveIfValid() {
-  if (editForm.name.trim() && editForm.position.trim()) {
+  if (canCommitEditingRow.value) {
     doCommit()
   } else {
     editingRowIdx.value = null
@@ -113,7 +117,7 @@ function autoSaveIfValid() {
 }
 
 function doCommit() {
-  if (!editForm.name.trim() || !editForm.position.trim()) {
+  if (!canCommitEditingRow.value) {
     message.warning('请填写公司名称和岗位')
     return
   }
@@ -137,7 +141,7 @@ function onEditKeydown(e: KeyboardEvent, field: 'name' | 'position' | 'salary') 
   if (e.isComposing) return
   if (e.key === 'Enter') {
     e.preventDefault()
-    if (field === 'salary') {
+    if (field === 'salary' || (field === 'position' && canCommitEditingRow.value)) {
       doCommit()
     } else {
       const inputs = tableRef.value?.querySelectorAll('.editing-row .cell-input input')
@@ -150,6 +154,25 @@ function onEditKeydown(e: KeyboardEvent, field: 'name' | 'position' | 'salary') 
     e.preventDefault()
     cancelEdit()
   }
+}
+
+function onDocumentPointerDown(e: PointerEvent) {
+  if (editingRowIdx.value === null) return
+
+  const target = e.target as HTMLElement | null
+  if (!target) return
+
+  if (
+    target.closest('.editing-row') ||
+    target.closest('.n-base-selection-menu') ||
+    target.closest('.n-base-select-menu') ||
+    target.closest('.n-date-panel') ||
+    target.closest('.n-popover')
+  ) {
+    return
+  }
+
+  autoSaveIfValid()
 }
 
 // ---- 列宽可拖拽 ----
@@ -329,6 +352,7 @@ let resizeObserver: ResizeObserver | null = null
 onMounted(() => {
   loadSavedColumnWidths()
   updateVisibleRows()
+  document.addEventListener('pointerdown', onDocumentPointerDown)
   if (tableRef.value) {
     resizeObserver = new ResizeObserver(updateVisibleRows)
     resizeObserver.observe(tableRef.value)
@@ -337,6 +361,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  document.removeEventListener('pointerdown', onDocumentPointerDown)
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeEnd)
 })
