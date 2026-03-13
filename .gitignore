@@ -134,3 +134,5 @@ package-lock.json
 
 # Electron build output
 dist-electron/
+dist/
+node_modules
