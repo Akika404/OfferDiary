@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
           class="col"
           :style="colStyle(col)"
         >
-          {{ col.title }}
+          {{ col.key === 'elapsed' && editingRowIdx !== null ? '流程模板' : col.title }}
           <span
             v-if="idx < columns.length - 1"
             class="resize-handle"
