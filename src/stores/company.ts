@@ -36,7 +36,7 @@ export const useCompanyStore = defineStore('company', () => {
 
   function addCompany(
     partial: Pick<Company, 'name' | 'position' | 'department' | 'salary' | 'templateId'>
-    & { appliedAt?: string }
+    & { appliedAt?: string; status?: string }
   ) {
     const now = new Date().toISOString()
     const templateId = partial.templateId || pipelineStore.defaultTemplateId
@@ -47,7 +47,7 @@ export const useCompanyStore = defineStore('company', () => {
       templateId,
       department: partial.department,
       salary: partial.salary,
-      status: pipelineStore.getInitialStageName(templateId),
+      status: partial.status || pipelineStore.getInitialStageName(templateId),
       appliedAt: partial.appliedAt || now,
       statusHistory: [],
       notes: '',

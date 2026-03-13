@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import {
-  NButton, NIcon, NSpace, NModal, NForm, NFormItem, NInput,
-  NDatePicker, NTag, NPopconfirm, NText, NSelect, useMessage
+  NButton, NIcon, NInput, NDatePicker, NTag,
+  NPopconfirm, NText, NSelect, useMessage
 } from 'naive-ui'
-import { AddOutline, ChevronForwardOutline, EyeOutline, TrashOutline } from '@vicons/ionicons5'
+import {
+  AddOutline, ChevronForwardOutline, EyeOutline, TrashOutline,
+  CheckmarkOutline, CloseOutline
+} from '@vicons/ionicons5'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useCompanyStore } from '@/stores/company'
-import { useInterviewStore } from '@/stores/interview'
 import { formatDate, getElapsedText } from '@/utils/time'
 import type { Company, StageConfig } from '@/types'
 import type { SelectOption } from 'naive-ui'
@@ -15,27 +17,117 @@ import { useRouter } from 'vue-router'
 
 const pipelineStore = usePipelineStore()
 const companyStore = useCompanyStore()
-const interviewStore = useInterviewStore()
 const message = useMessage()
 const router = useRouter()
 
-const showAddModal = ref(false)
 const expandedId = ref<string | null>(null)
-const addForm = ref({
+
+// ---- 填满一页 ----
+const ROW_HEIGHT = 52
+const HEADER_HEIGHT = 44
+const tableRef = ref<HTMLElement>()
+const visibleRowCount = ref(15)
+
+const emptyRowCount = computed(() =>
+  Math.max(1, visibleRowCount.value - companyStore.companies.length)
+)
+
+function updateVisibleRows() {
+  if (tableRef.value) {
+    const h = tableRef.value.clientHeight
+    visibleRowCount.value = Math.max(5, Math.floor((h - HEADER_HEIGHT) / ROW_HEIGHT))
+  }
+}
+
+// ---- 行内编辑 ----
+const editingRowIdx = ref<number | null>(null)
+const editForm = reactive({
   name: '',
   position: '',
-  department: '',
   salary: '',
   appliedAt: Date.now(),
-  templateId: pipelineStore.defaultTemplateId
+  templateId: pipelineStore.defaultTemplateId,
+  status: pipelineStore.getInitialStageName(pipelineStore.defaultTemplateId)
 })
 
 const templateOptions = computed<SelectOption[]>(() =>
-  pipelineStore.templates.map(template => ({
-    label: template.name,
-    value: template.id
+  pipelineStore.templates.map(t => ({ label: t.name, value: t.id }))
+)
+
+const statusOptions = computed<SelectOption[]>(() =>
+  pipelineStore.getStagesByTemplateId(editForm.templateId).map(s => ({
+    label: s.name,
+    value: s.name
   }))
 )
+
+watch(() => editForm.templateId, (newId) => {
+  editForm.status = pipelineStore.getInitialStageName(newId)
+})
+
+function activateNewRow(idx: number) {
+  if (editingRowIdx.value !== null && editingRowIdx.value !== idx) {
+    autoSaveIfValid()
+  }
+  editingRowIdx.value = idx
+  Object.assign(editForm, {
+    name: '', position: '', salary: '', appliedAt: Date.now(),
+    templateId: pipelineStore.defaultTemplateId,
+    status: pipelineStore.getInitialStageName(pipelineStore.defaultTemplateId)
+  })
+  nextTick(() => {
+    const input = tableRef.value?.querySelector('.editing-row .cell-input input') as HTMLInputElement
+    input?.focus()
+  })
+}
+
+function autoSaveIfValid() {
+  if (editForm.name.trim() && editForm.position.trim()) {
+    doCommit()
+  } else {
+    editingRowIdx.value = null
+  }
+}
+
+function doCommit() {
+  if (!editForm.name.trim() || !editForm.position.trim()) {
+    message.warning('请填写公司名称和岗位')
+    return
+  }
+  companyStore.addCompany({
+    name: editForm.name.trim(),
+    position: editForm.position.trim(),
+    salary: editForm.salary.trim() || undefined,
+    templateId: editForm.templateId,
+    status: editForm.status,
+    appliedAt: new Date(editForm.appliedAt).toISOString()
+  })
+  message.success('添加成功')
+  editingRowIdx.value = null
+}
+
+function cancelEdit() {
+  editingRowIdx.value = null
+}
+
+function onEditKeydown(e: KeyboardEvent, field: 'name' | 'position' | 'salary') {
+  if (e.isComposing) return
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    if (field === 'salary') {
+      doCommit()
+    } else {
+      const inputs = tableRef.value?.querySelectorAll('.editing-row .cell-input input')
+      if (inputs) {
+        const nextIdx = field === 'name' ? 1 : 2
+        ;(inputs[nextIdx] as HTMLInputElement)?.focus()
+      }
+    }
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    cancelEdit()
+  }
+}
 
 // ---- 列宽可拖拽 ----
 interface ColDef {
@@ -43,25 +135,54 @@ interface ColDef {
   title: string
   minWidth: number
   fixedWidth: number | null
+  flex: number
 }
 
 const COL_MIN = 80
+const COLUMN_WIDTHS_STORAGE_KEY = 'od-pipeline-column-widths'
 
 const columns = reactive<ColDef[]>([
-  { key: 'name',    title: '公司名称', minWidth: COL_MIN, fixedWidth: null },
-  { key: 'position', title: '投递岗位', minWidth: COL_MIN, fixedWidth: null },
-  { key: 'date',    title: '投递时间', minWidth: COL_MIN, fixedWidth: null },
-  { key: 'salary',  title: '薪资待遇', minWidth: COL_MIN, fixedWidth: null },
-  { key: 'status',  title: '当前状态', minWidth: COL_MIN, fixedWidth: null },
-  { key: 'elapsed', title: '距上次变更', minWidth: COL_MIN, fixedWidth: null },
-  { key: 'actions', title: '操作',    minWidth: COL_MIN, fixedWidth: null },
+  { key: 'name',    title: '公司名称', minWidth: 130, fixedWidth: null, flex: 1.6 },
+  { key: 'position', title: '投递岗位', minWidth: COL_MIN, fixedWidth: null, flex: 1 },
+  { key: 'date',    title: '投递时间', minWidth: COL_MIN, fixedWidth: null, flex: 1 },
+  { key: 'salary',  title: '薪资待遇', minWidth: 100, fixedWidth: null, flex: 0.95 },
+  { key: 'status',  title: '当前状态', minWidth: 60, fixedWidth: null, flex: 0.6 },
+  { key: 'elapsed', title: '距上次变更', minWidth: COL_MIN, fixedWidth: null, flex: 1 },
+  { key: 'actions', title: '操作',    minWidth: COL_MIN, fixedWidth: null, flex: 1 },
 ])
 
 function colStyle(col: ColDef) {
   if (col.fixedWidth !== null) {
     return { width: col.fixedWidth + 'px', minWidth: col.minWidth + 'px', flex: 'none' }
   }
-  return { flex: '1', minWidth: col.minWidth + 'px' }
+  return { flex: String(col.flex), minWidth: col.minWidth + 'px' }
+}
+
+function loadSavedColumnWidths() {
+  try {
+    const raw = localStorage.getItem(COLUMN_WIDTHS_STORAGE_KEY)
+    if (!raw) return
+
+    const saved = JSON.parse(raw) as Record<string, number>
+    for (const col of columns) {
+      const width = saved[col.key]
+      if (typeof width === 'number' && Number.isFinite(width)) {
+        col.fixedWidth = Math.max(col.minWidth, width)
+      }
+    }
+  } catch {
+    localStorage.removeItem(COLUMN_WIDTHS_STORAGE_KEY)
+  }
+}
+
+function persistColumnWidths() {
+  const payload: Record<string, number> = {}
+  for (const col of columns) {
+    if (col.fixedWidth !== null) {
+      payload[col.key] = col.fixedWidth
+    }
+  }
+  localStorage.setItem(COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(payload))
 }
 
 let resizingIdx = -1
@@ -88,6 +209,9 @@ function onResizeMove(e: MouseEvent) {
 }
 
 function onResizeEnd() {
+  if (resizingIdx >= 0) {
+    persistColumnWidths()
+  }
   resizingIdx = -1
   document.removeEventListener('mousemove', onResizeMove)
   document.removeEventListener('mouseup', onResizeEnd)
@@ -95,11 +219,7 @@ function onResizeEnd() {
   document.body.style.userSelect = ''
 }
 
-onBeforeUnmount(() => {
-  document.removeEventListener('mousemove', onResizeMove)
-  document.removeEventListener('mouseup', onResizeEnd)
-})
-
+// ---- 数据行逻辑 ----
 function toggleExpand(id: string) {
   expandedId.value = expandedId.value === id ? null : id
 }
@@ -171,35 +291,6 @@ function forkCurvePath(count: number, index: number): string {
   return `M 0,${midY} C 28,${midY} 28,${nodeY} 56,${nodeY}`
 }
 
-function handleAdd() {
-  if (!addForm.value.name || !addForm.value.position) {
-    message.warning('请填写公司名称和岗位')
-    return
-  }
-  companyStore.addCompany({
-    name: addForm.value.name,
-    position: addForm.value.position,
-    templateId: addForm.value.templateId,
-    department: addForm.value.department || undefined,
-    salary: addForm.value.salary || undefined,
-    appliedAt: new Date(addForm.value.appliedAt).toISOString()
-  })
-  showAddModal.value = false
-  addForm.value = {
-    name: '',
-    position: '',
-    department: '',
-    salary: '',
-    appliedAt: Date.now(),
-    templateId: pipelineStore.defaultTemplateId
-  }
-  message.success('添加成功')
-}
-
-onMounted(() => {
-  addForm.value.templateId = pipelineStore.defaultTemplateId
-})
-
 function handleDelete(id: string, e: Event) {
   e.stopPropagation()
   companyStore.removeCompany(id)
@@ -208,21 +299,33 @@ function handleDelete(id: string, e: Event) {
 function goDetail(id: string) {
   router.push(`/company/${id}`)
 }
+
+// ---- 生命周期 ----
+let resizeObserver: ResizeObserver | null = null
+
+onMounted(() => {
+  loadSavedColumnWidths()
+  updateVisibleRows()
+  if (tableRef.value) {
+    resizeObserver = new ResizeObserver(updateVisibleRows)
+    resizeObserver.observe(tableRef.value)
+  }
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  document.removeEventListener('mousemove', onResizeMove)
+  document.removeEventListener('mouseup', onResizeEnd)
+})
 </script>
 
 <template>
   <div class="pipeline-root">
-    <NSpace justify="space-between" align="center" style="margin-bottom: 16px; flex-shrink: 0">
+    <div style="margin-bottom: 16px; flex-shrink: 0">
       <h2 style="margin: 0; font-size: 20px; font-weight: 700">投递管理</h2>
-      <NSpace>
-        <NButton type="primary" @click="showAddModal = true">
-          <template #icon><NIcon><AddOutline /></NIcon></template>
-          添加投递
-        </NButton>
-      </NSpace>
-    </NSpace>
+    </div>
 
-    <div class="table-container">
+    <div class="table-container" ref="tableRef">
       <!-- 表头 -->
       <div class="table-header">
         <div
@@ -233,15 +336,11 @@ function goDetail(id: string) {
         >
           {{ col.title }}
           <span
+            v-if="idx < columns.length - 1"
             class="resize-handle"
             @mousedown="onResizeStart(idx, $event)"
           />
         </div>
-      </div>
-
-      <!-- 空状态 -->
-      <div v-if="companyStore.companies.length === 0" class="empty-state">
-        <NText depth="3">暂无投递记录，点击「添加投递」开始</NText>
       </div>
 
       <!-- 数据行 -->
@@ -259,7 +358,7 @@ function goDetail(id: string) {
             >
               <ChevronForwardOutline />
             </NIcon>
-            <NText strong style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ company.name }}</NText>
+            <NText strong class="company-name-text">{{ company.name }}</NText>
           </div>
           <div class="col" :style="colStyle(columns[1])">
             <NText style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ company.position }}</NText>
@@ -372,10 +471,9 @@ function goDetail(id: string) {
                 </div>
               </template>
 
-              <!-- 终态：未选终态 → 曲线分叉 Offer/拒绝 + 间隔 + 流程终止 -->
+              <!-- 终态：未选终态 → 曲线分叉 -->
               <template v-else>
                 <div class="timeline-fork-area">
-                  <!-- SVG 曲线 -->
                   <svg
                     class="fork-curves"
                     :width="56"
@@ -392,7 +490,6 @@ function goDetail(id: string) {
                       stroke-linecap="round"
                     />
                   </svg>
-                  <!-- 节点列 -->
                   <div class="fork-nodes">
                     <div
                       v-for="term in getTerminalLayout(company).forkStages"
@@ -422,48 +519,94 @@ function goDetail(id: string) {
           </div>
         </Transition>
       </div>
-    </div>
 
-    <!-- 添加投递弹窗 -->
-    <NModal
-      v-model:show="showAddModal"
-      preset="card"
-      title="添加投递"
-      style="width: 460px"
-      :bordered="false"
-      :mask-closable="true"
-    >
-      <NForm label-placement="left" label-width="80">
-        <NFormItem label="公司名称" required>
-          <NInput v-model:value="addForm.name" placeholder="如: 腾讯" />
-        </NFormItem>
-        <NFormItem label="投递岗位" required>
-          <NInput v-model:value="addForm.position" placeholder="如: 前端开发" />
-        </NFormItem>
-        <NFormItem label="部门">
-          <NInput v-model:value="addForm.department" placeholder="如: 微信事业群" />
-        </NFormItem>
-        <NFormItem label="薪资待遇">
-          <NInput v-model:value="addForm.salary" placeholder="如: 20k-30k" />
-        </NFormItem>
-        <NFormItem label="投递时间">
-          <NDatePicker v-model:value="addForm.appliedAt" type="date" style="width: 100%" />
-        </NFormItem>
-        <NFormItem label="流程模板">
-          <NSelect
-            v-model:value="addForm.templateId"
-            :options="templateOptions"
-            placeholder="选择流程模板"
-          />
-        </NFormItem>
-      </NForm>
-      <template #footer>
-        <NSpace justify="end">
-          <NButton @click="showAddModal = false">取消</NButton>
-          <NButton type="primary" @click="handleAdd">确定</NButton>
-        </NSpace>
+      <!-- 空行 / 行内编辑行 -->
+      <template v-for="i in emptyRowCount" :key="'empty-' + i">
+        <!-- 正在编辑的行 -->
+        <div
+          v-if="editingRowIdx === i - 1"
+          class="table-row editing-row"
+          @click.stop
+        >
+          <div class="col" :style="colStyle(columns[0])">
+            <NInput
+              v-model:value="editForm.name"
+              size="small"
+              placeholder="公司名称"
+              class="cell-input"
+              @keydown="(e: KeyboardEvent) => onEditKeydown(e, 'name')"
+            />
+          </div>
+          <div class="col" :style="colStyle(columns[1])">
+            <NInput
+              v-model:value="editForm.position"
+              size="small"
+              placeholder="投递岗位"
+              class="cell-input"
+              @keydown="(e: KeyboardEvent) => onEditKeydown(e, 'position')"
+            />
+          </div>
+          <div class="col" :style="colStyle(columns[2])">
+            <NDatePicker
+              v-model:value="editForm.appliedAt"
+              size="small"
+              type="date"
+              style="width: 100%"
+            />
+          </div>
+          <div class="col" :style="colStyle(columns[3])">
+            <NInput
+              v-model:value="editForm.salary"
+              size="small"
+              placeholder="25k*16"
+              class="cell-input"
+              @keydown="(e: KeyboardEvent) => onEditKeydown(e, 'salary')"
+            />
+          </div>
+          <div class="col" :style="colStyle(columns[4])">
+            <NSelect
+              v-model:value="editForm.status"
+              size="small"
+              :options="statusOptions"
+              style="width: 100%"
+            />
+          </div>
+          <div class="col" :style="colStyle(columns[5])">
+            <NSelect
+              v-model:value="editForm.templateId"
+              size="small"
+              :options="templateOptions"
+              style="width: 100%"
+            />
+          </div>
+          <div class="col col-actions" :style="colStyle(columns[6])">
+            <NButton size="tiny" type="primary" secondary style="padding: 10px 8px" @click="doCommit">
+              <template #icon><NIcon :size="14"><CheckmarkOutline /></NIcon></template>
+              确定
+            </NButton>
+            <NButton size="tiny" quaternary @click="cancelEdit">
+              <template #icon><NIcon :size="14"><CloseOutline /></NIcon></template>
+            </NButton>
+          </div>
+        </div>
+
+        <!-- 空占位行 -->
+        <div
+          v-else
+          class="table-row empty-row"
+          :class="{ 'empty-row-active': i === 1 }"
+          @click="i === 1 && activateNewRow(0)"
+        >
+          <div class="col" :style="colStyle(columns[0])">
+            <span v-if="i === 1" class="placeholder-hint">
+              <NIcon :size="12" style="margin-right: 4px"><AddOutline /></NIcon>
+              点击添加投递…
+            </span>
+          </div>
+          <div v-for="col in columns.slice(1)" :key="col.key" class="col" :style="colStyle(col)" />
+        </div>
       </template>
-    </NModal>
+    </div>
   </div>
 </template>
 
@@ -540,7 +683,7 @@ function goDetail(id: string) {
   position: absolute;
   right: 0;
   top: 0;
-  width: 6px;
+  width: 4px;
   height: 100%;
   cursor: col-resize;
   z-index: 1;
@@ -552,14 +695,14 @@ function goDetail(id: string) {
   right: 0;
   top: 25%;
   height: 50%;
-  width: 2px;
+  width: 1px;
   border-radius: 1px;
-  background: transparent;
+  background: #d6d9de;
   transition: background 0.15s;
 }
 
 .resize-handle:hover::after {
-  background: #c0c4cc;
+  background: #8f96a3;
 }
 
 .col-actions {
@@ -579,12 +722,71 @@ function goDetail(id: string) {
   transform: rotate(90deg);
 }
 
-.empty-state {
-  flex: 1;
+.company-name-text {
+  display: block;
+  width: 100%;
+  padding: 0 24px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+/* 空行 */
+.empty-row {
+  cursor: default;
+  border-bottom: 1px solid #f8f8f8;
+}
+
+.empty-row-active {
+  cursor: pointer;
+}
+
+.empty-row-active:hover {
+  background: #fafbfc;
+}
+
+.empty-row-active:hover .placeholder-hint {
+  opacity: 1;
+}
+
+.placeholder-hint {
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 60px;
+  font-size: 13px;
+  color: #bbb;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+  padding-left: 28px;
+}
+
+/* 编辑行 */
+.editing-row {
+  background: #f0f7ff;
+  border-bottom: 1px solid #d6e4f0;
+  cursor: default;
+}
+
+.editing-row:hover {
+  background: #f0f7ff;
+}
+
+.cell-input {
+  width: 100%;
+}
+
+.editing-row :deep(.n-input .n-input__input) {
+  text-align: center;
+}
+
+.editing-row :deep(.n-input) {
+  --n-border-radius: 6px !important;
+}
+
+.editing-row :deep(.n-base-selection) {
+  --n-border-radius: 6px !important;
 }
 
 /* 时间线面板 */
